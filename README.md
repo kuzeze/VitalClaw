@@ -16,11 +16,14 @@
 
 VitalClaw is a local-first personal health observability engine for Apple Health, built to work naturally with Codex.
 
-It pulls your Apple Health data locally, learns your baseline over time, and flags meaningful drift before your signals turn into charts you never look at again.
+It pulls your Apple Health data locally, learns your baseline over time, and stays quiet unless your data meaningfully drifts from your normal.
 
 This is not a generic AI health chatbot.  
 This is not a diagnosis product.  
 This is a monitoring engine with Codex as the interface.
+
+> No news is good news.  
+> VitalClaw only speaks when the drift is worth your attention.
 
 ## Overview
 
@@ -30,6 +33,7 @@ VitalClaw is aimed at one layer:
 - `personal baseline`
 - `low-noise alerting`
 - `context-aware follow-up`
+- `quiet-by-default monitoring`
 
 The core question is:
 
@@ -42,6 +46,30 @@ Current v1 scope:
 - `Codex-native`, with CLI + MCP surfaces
 - `baseline-aware`, not population-threshold-first
 - `precision-first`, with one alert family in v1: `recovery_suppression`
+- `quiet by default`, with scheduled checks and selective alerts
+
+## Product Principle
+
+VitalClaw should not behave like a daily wellness bot that constantly talks.
+
+Its default state is silence:
+
+- it keeps watching
+- it keeps learning your normal
+- it keeps checking for drift
+- it only interrupts when the drift is strong enough to deserve attention
+
+That means the product is not trying to maximize summaries, charts, or AI commentary.
+
+It is trying to reduce how often you need to look at your own health data.
+
+The standard is not:
+
+`Did we detect an anomaly?`
+
+The standard is:
+
+`Is this worth interrupting you for?`
 
 ## Anatomy of an Alert
 
@@ -57,6 +85,7 @@ The point is:
 - daily features are compared to a personal baseline
 - multiple corroborating deviations are required before opening an alert
 - the model is used for explanation and follow-up, not threshold invention
+- the system is designed to stay silent when nothing is worth attention
 
 ## Demo
 
@@ -66,8 +95,16 @@ $ vitalclaw sync
 ✓ Normalized local observations into SQLite
 
 $ vitalclaw alerts
+status: ok
+No alert-worthy drift detected from recent personal baseline.
+No user-facing interruption sent.
+```
+
+```text
+$ vitalclaw alerts
+status: new_alert
 ⚠ recovery_suppression
-  Multiple recovery markers drifted together
+  Multiple recovery markers drifted together for 3 days
   Follow-up: Any symptoms in the last 48 hours?
 
 $ vitalclaw explain --latest
@@ -90,6 +127,16 @@ flowchart LR
     H --> I["MCP Server"]
     I --> J["Codex"]
 ```
+
+Daily checks are meant to run on a schedule.
+
+The intended behavior is:
+
+1. `sync`
+2. `materialize`
+3. `check alerts`
+4. stay silent if the result is not worth attention
+5. only explain or follow up when a new, unresolved, or worsening alert exists
 
 VitalClaw currently monitors:
 
@@ -201,6 +248,18 @@ It does **not**:
 The product boundary is:
 
 **detect meaningful changes from personal baseline for monitoring purposes**
+
+Silent-by-default does **not** mean clinically reassuring by default.
+
+No alert means:
+
+- no strong drift was detected with the current data and policy
+
+It does **not** mean:
+
+- you are definitely fine
+- there is definitely no issue
+- the system has ruled anything out
 
 ## Roadmap
 
