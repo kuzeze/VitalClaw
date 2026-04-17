@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./docs/assets/vitalclaw-logo-wordmark.png" alt="VitalClaw" width="720" />
+  <img src="./docs/assets/vitalclaw-logo-wordmark.png" alt="VitalClaw" width="640" />
 </p>
 
 <p align="center">
@@ -43,16 +43,10 @@ Current v1 scope:
 - `baseline-aware`, not population-threshold-first
 - `precision-first`, with one alert family in v1: `recovery_suppression`
 
-## Visuals
+## Anatomy of an Alert
 
 <p align="center">
-  <img src="./docs/assets/vitalclaw-logo-icon.png" alt="VitalClaw icon" width="220" />
-</p>
-
-### Anatomy of an Alert
-
-<p align="center">
-  <img src="./docs/assets/alert-anatomy.svg" alt="Anatomy of a VitalClaw alert" width="100%" />
+  <img src="./docs/assets/alert-anatomy.png" alt="Anatomy of a VitalClaw alert" width="100%" />
 </p>
 
 The point is not “AI looked at my chart.”
