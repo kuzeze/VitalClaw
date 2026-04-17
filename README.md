@@ -1,16 +1,103 @@
-# VitalClaw
+<p align="center">
+  <img src="./docs/assets/vitalclaw-logo-wordmark.png" alt="VitalClaw" width="720" />
+</p>
 
-**VitalClaw keeps a grip on your baseline.**
+<p align="center">
+  Keeps a grip on your baseline.
+</p>
 
-VitalClaw is an open-source personal health observability engine. It watches your Apple Health trends over time, learns what is normal for *you*, and flags meaningful drift before your data turns into a pile of charts nobody looks at twice.
+<p align="center">
+  <a href="https://github.com/kuzeze/VitalClaw/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/github/license/kuzeze/VitalClaw"></a>
+  <img alt="Python" src="https://img.shields.io/badge/python-3.12+-3776AB">
+  <img alt="Status" src="https://img.shields.io/badge/status-early_beta-C75C34">
+  <img alt="Local First" src="https://img.shields.io/badge/local--first-yes-216343">
+  <img alt="MCP" src="https://img.shields.io/badge/MCP-ready-6C4CF1">
+</p>
+
+VitalClaw is a local-first personal health observability engine for Apple Health, built to work naturally with Codex.
+
+It pulls your Apple Health data locally, learns your baseline over time, and flags meaningful drift before your signals turn into charts you never look at again.
 
 This is not a generic AI health chatbot.  
 This is not a diagnosis product.  
-This is a local-first monitoring system with Codex as the interface.
+This is a monitoring engine with Codex as the interface.
 
-## What It Does
+## Overview
 
-VitalClaw currently connects to `HealthExport Remote`, pulls your Apple Health data locally, builds daily features, computes personal baselines, and runs the first alert family:
+VitalClaw is aimed at one layer:
+
+- `longitudinal memory`
+- `personal baseline`
+- `low-noise alerting`
+- `context-aware follow-up`
+
+The core question is:
+
+> Is this just noise, or is something actually drifting?
+
+Current v1 scope:
+
+- `Apple Health only`, via `HealthExport Remote`
+- `local-first`, with project-local SQLite under `.vitalclaw/`
+- `Codex-native`, with CLI + MCP surfaces
+- `baseline-aware`, not population-threshold-first
+- `precision-first`, with one alert family in v1: `recovery_suppression`
+
+## Visuals
+
+<p align="center">
+  <img src="./docs/assets/vitalclaw-logo-icon.png" alt="VitalClaw icon" width="220" />
+</p>
+
+### Anatomy of an Alert
+
+<p align="center">
+  <img src="./docs/assets/alert-anatomy.svg" alt="Anatomy of a VitalClaw alert" width="100%" />
+</p>
+
+The point is not “AI looked at my chart.”
+
+The point is:
+
+- raw signals become daily features
+- daily features are compared to a personal baseline
+- multiple corroborating deviations are required before opening an alert
+- the model is used for explanation and follow-up, not threshold invention
+
+## Demo
+
+```text
+$ vitalclaw sync
+✓ Pulled fresh data from HealthExport Remote
+✓ Normalized local observations into SQLite
+
+$ vitalclaw alerts
+⚠ recovery_suppression
+  Multiple recovery markers drifted together
+  Follow-up: Any symptoms in the last 48 hours?
+
+$ vitalclaw explain --latest
+Changed: HRV down, resting HR up, sleep below baseline
+Missing context: Any symptoms in the last 48 hours?
+History: No prior similar episode has been recorded.
+```
+
+## Workflow
+
+```mermaid
+flowchart LR
+    A["Apple Health"] --> B["HealthExport Remote"]
+    B --> C["Official he CLI"]
+    C --> D["Ingest / Normalize"]
+    D --> E["Local SQLite"]
+    E --> F["Daily Features"]
+    F --> G["Baseline Engine"]
+    G --> H["Alert Policies"]
+    H --> I["MCP Server"]
+    I --> J["Codex"]
+```
+
+VitalClaw currently monitors:
 
 - `sleep_duration_hours`
 - `resting_heart_rate`
@@ -18,78 +105,37 @@ VitalClaw currently connects to `HealthExport Remote`, pulls your Apple Health d
 - `respiratory_rate`
 - `wrist_temperature_celsius`
 
-Then it asks a harder question than most health apps:
-
-> Is this just noise, or is something actually drifting?
-
-## Why This Exists
-
-Most health products do one of these two things:
-
-- show dashboards
-- let you ask questions about raw data
-
-VitalClaw is aimed at a different layer:
-
-- `longitudinal memory`
-- `personal baseline`
-- `low-noise alerting`
-- `context-aware follow-up`
-
-The goal is simple:
-
-**Catch meaningful change early enough that it is worth your attention.**
-
-## Current Shape
-
-VitalClaw v1 is intentionally narrow:
-
-- `Apple Health only`
-- `HealthExport Remote + official he CLI`
-- `local SQLite runtime`
-- `one alert family: recovery_suppression`
-- `Codex-native workflow`
-
-It already supports:
-
-- local runtime under `.vitalclaw/`
-- raw snapshot caching
-- normalized observations
-- daily feature materialization
-- baseline computation
-- alert / episode / context persistence
-- CLI entrypoints
-- MCP server for Codex
-
 ## Quick Start
+
+### Easiest Path
 
 1. Clone the repo.
 2. Add it as a Codex `project`.
-3. Install the package locally:
-
-```bash
-python3 -m pip install -e .
-```
-
+3. Tell Codex to set up VitalClaw.
 4. Install `Health Export CSV` on iPhone and enable `Remote`.
 5. Copy your account key from:
 
 [`https://remote.healthexport.app/settings/sharing`](https://remote.healthexport.app/settings/sharing)
 
-6. Run:
+6. Paste the key into the Codex chat.
+7. Done.
 
-```bash
-vitalclaw init --account-key "<your-account-key>"
-```
+Codex should handle the rest:
 
-That first run will:
-
+- install the local package
 - verify or install the official `he` CLI
 - create `.vitalclaw/`
 - save local config
 - sync your health data
 - build daily features
 - run the first alert pass
+
+### Manual Fallback
+
+```bash
+python3 -m pip install -e .
+vitalclaw init --account-key "<your-account-key>"
+```
 
 ## Main Commands
 
@@ -103,41 +149,6 @@ vitalclaw open-alerts
 vitalclaw mcp
 ```
 
-## How It Feels
-
-There are really only two modes:
-
-### Ask
-
-Use Codex to ask:
-
-- “What changed this week?”
-- “Why did this alert fire?”
-- “Do I look off compared to my normal?”
-- “What context am I missing?”
-
-### Watch
-
-Let Codex automation run the daily loop:
-
-1. `vitalclaw sync`
-2. `vitalclaw materialize`
-3. `vitalclaw alerts`
-4. `vitalclaw explain --latest` when needed
-
-## Repo Map
-
-```text
-docs/                  product and system docs
-src/vitalclaw/cli.py   CLI entrypoint
-src/vitalclaw/external/ official HealthExport integration
-src/vitalclaw/ingest/  observation normalization
-src/vitalclaw/features/ daily feature materialization
-src/vitalclaw/monitor/ baseline + alert policies
-src/vitalclaw/storage/ local SQLite persistence
-src/vitalclaw/mcp_server.py  Codex-facing MCP server
-```
-
 ## Local Data
 
 VitalClaw stores data locally inside the repo runtime:
@@ -149,22 +160,7 @@ VitalClaw stores data locally inside the repo runtime:
 Finder hides dot-folders by default on macOS.  
 Use `Command + Shift + .` to show them.
 
-## Safety Boundary
-
-VitalClaw is currently a `wellness / monitoring` project.
-
-It does **not**:
-
-- diagnose disease
-- replace a clinician
-- claim medical-grade thresholds
-- guarantee that every anomaly is meaningful
-
-The product boundary is:
-
-**detect meaningful changes from personal baseline for monitoring purposes**
-
-## Status
+## Current Status
 
 What is working now:
 
@@ -182,6 +178,35 @@ What is not here yet:
 - multiple alert families
 - web UI
 - consumer-grade onboarding
+
+## Repo Map
+
+```text
+docs/                  product and system docs
+docs/assets/           logos and README visuals
+src/vitalclaw/cli.py   CLI entrypoint
+src/vitalclaw/external/ official HealthExport integration
+src/vitalclaw/ingest/  observation normalization
+src/vitalclaw/features/ daily feature materialization
+src/vitalclaw/monitor/ baseline + alert policies
+src/vitalclaw/storage/ local SQLite persistence
+src/vitalclaw/mcp_server.py  Codex-facing MCP server
+```
+
+## Safety Boundary
+
+VitalClaw is currently a `wellness / monitoring` project.
+
+It does **not**:
+
+- diagnose disease
+- replace a clinician
+- claim medical-grade thresholds
+- guarantee that every anomaly is meaningful
+
+The product boundary is:
+
+**detect meaningful changes from personal baseline for monitoring purposes**
 
 ## Roadmap
 
@@ -204,7 +229,7 @@ Good contributions are likely to be:
 - stronger local-first privacy and runtime ergonomics
 - clearer integrations with Codex skills / MCP / automation
 
-If you want to contribute, start by reading the docs in [docs/](/Users/renzeli/Desktop/VitalClaw/docs).
+If you want to contribute, start by reading the docs in [`docs/`](./docs).
 
 ## License
 
