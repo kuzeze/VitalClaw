@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vitalclaw"
+version = "0.1.0"
+description = "VitalClaw personal health observability engine"
+requires-python = ">=3.12"
+dependencies = [
+  "mcp>=1.27,<2.0",
+]
+
+[project.scripts]
+vitalclaw = "vitalclaw.cli:main"
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3,<9.0",
+]
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["vitalclaw*"]

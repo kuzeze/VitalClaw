@@ -1,0 +1,15 @@
+__pycache__/
+.pytest_cache/
+*.py[cod]
+.venv/
+venv/
+build/
+dist/
+*.db
+*.sqlite3
+*.egg-info/
+.DS_Store
+.env
+.env.*
+!.env.example
+.vitalclaw/
