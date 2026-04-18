@@ -11,12 +11,14 @@ from vitalclaw.mcp_server import run_mcp_server
 from vitalclaw.service import (
     build_latest_features,
     check_alerts,
+    dashboard_snapshot,
     explain_latest_alert,
     initialize_project,
     list_open_alerts,
     record_context_event,
     sync_remote_data,
 )
+from vitalclaw.ui import run_ui_server
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -49,6 +51,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("mcp", help="Run the VitalClaw MCP server.")
     subparsers.add_parser("open-alerts", help="List currently open alerts.")
+    subparsers.add_parser("snapshot", help="Return the latest monitoring console snapshot.")
+    ui_parser = subparsers.add_parser("ui", help="Run the local monitoring console.")
+    ui_parser.add_argument("--host", default="127.0.0.1", help="UI host.")
+    ui_parser.add_argument("--port", type=int, default=3000, help="UI port.")
+    ui_parser.add_argument("--no-open", action="store_true", help="Do not open the browser automatically.")
 
     return parser
 
@@ -61,6 +68,14 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "mcp":
         run_mcp_server(project_root=project_root)
+        return
+    if args.command == "ui":
+        run_ui_server(
+            project_root=project_root,
+            host=args.host,
+            port=args.port,
+            open_browser=not args.no_open,
+        )
         return
 
     if args.command == "init":
@@ -83,6 +98,8 @@ def main(argv: list[str] | None = None) -> None:
         result = explain_latest_alert(project_root=project_root)
     elif args.command == "open-alerts":
         result = list_open_alerts(project_root=project_root)
+    elif args.command == "snapshot":
+        result = dashboard_snapshot(project_root=project_root)
     elif args.command == "context" and args.context_command == "add":
         result = record_context_event(
             project_root=project_root,
@@ -147,6 +164,14 @@ def _format_text(command: str, result: dict) -> str:
         lines = ["Open alerts:"]
         lines.extend(f"- {alert['title']} ({alert['status']}) on {alert['feature_date']}" for alert in alerts)
         return "\n".join(lines)
+    if command == "snapshot":
+        status = result["status"]
+        return (
+            f"Today: {status['label']}.\n"
+            f"Reason: {status['reason']}\n"
+            f"Latest feature date: {result['latest_feature_date']}\n"
+            f"Open alerts: {result['open_alert_count']}"
+        )
     if command == "context":
         event = result["event"]
         return (

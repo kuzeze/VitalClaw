@@ -248,6 +248,13 @@ def list_open_alerts(*, project_root: Path | None = None) -> dict[str, Any]:
     return {"alerts": [_alert_to_dict(alert) for alert in alerts]}
 
 
+def dashboard_snapshot(*, project_root: Path | None = None) -> dict[str, Any]:
+    """Return the latest monitoring console snapshot."""
+    from vitalclaw.ui_snapshot import dashboard_snapshot as _dashboard_snapshot
+
+    return _dashboard_snapshot(project_root=project_root)
+
+
 def _load_runtime(project_root: Path | None = None) -> tuple[RuntimePaths, AppConfig, Repository]:
     paths = get_runtime_paths(project_root)
     ensure_runtime_dirs(paths)
