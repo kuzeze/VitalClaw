@@ -13,3 +13,6 @@ dist/
 .env.*
 !.env.example
 .vitalclaw/
+_design_bundle/
+_design_bundle2/
+particle-default-effect (2).html

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "vitalclaw-project": {
+      "command": "python3",
+      "args": [
+        "-c",
+        "import sys; from pathlib import Path; root = Path.cwd(); sys.path.insert(0, str(root / 'src')); from vitalclaw.mcp_server import run_mcp_server; run_mcp_server(project_root=root)"
+      ],
+      "cwd": "../.."
+    }
+  }
+}

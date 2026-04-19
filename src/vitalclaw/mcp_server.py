@@ -5,16 +5,20 @@ from __future__ import annotations
 from pathlib import Path
 
 from vitalclaw.service import (
+    answer_health_question,
     build_latest_features,
     explain_latest_alert,
+    get_briefing,
+    get_user_profile,
     list_open_alerts,
     record_context_event,
+    set_user_profile,
     sync_remote_data,
 )
 
 
-def run_mcp_server(*, project_root: Path | None = None) -> None:
-    """Run the VitalClaw MCP server over stdio."""
+def build_mcp_server(*, project_root: Path | None = None):
+    """Build the VitalClaw MCP server with its registered tools."""
     try:
         from mcp.server.fastmcp import FastMCP
     except ModuleNotFoundError as exc:  # pragma: no cover - exercised in user environments
@@ -47,4 +51,39 @@ def run_mcp_server(*, project_root: Path | None = None) -> None:
             effective_date=effective_date,
         )
 
+    @server.tool(name="get_user_profile")
+    def get_user_profile_tool() -> dict:
+        return get_user_profile(project_root=project_root)
+
+    @server.tool(name="set_user_profile")
+    def set_user_profile_tool(
+        auto_brief_enabled: bool | None = None,
+        always_sync_on_brief: bool | None = None,
+        default_briefing_mode: str | None = None,
+        preferred_metrics: list[str] | None = None,
+        standing_instruction: str | None = None,
+    ) -> dict:
+        return set_user_profile(
+            project_root=project_root,
+            auto_brief_enabled=auto_brief_enabled,
+            always_sync_on_brief=always_sync_on_brief,
+            default_briefing_mode=default_briefing_mode,
+            preferred_metrics=preferred_metrics,
+            standing_instruction=standing_instruction,
+        )
+
+    @server.tool(name="get_briefing")
+    def get_briefing_tool() -> dict:
+        return get_briefing(project_root=project_root)
+
+    @server.tool(name="answer_health_question")
+    def answer_health_question_tool(question: str) -> dict:
+        return answer_health_question(project_root=project_root, question=question)
+
+    return server
+
+
+def run_mcp_server(*, project_root: Path | None = None) -> None:
+    """Run the VitalClaw MCP server over stdio."""
+    server = build_mcp_server(project_root=project_root)
     server.run()

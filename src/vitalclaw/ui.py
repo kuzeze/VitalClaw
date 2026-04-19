@@ -119,6 +119,15 @@ def _worst_tone(metrics_by_id: dict, metric_ids: list[str]) -> str:
 
 
 def _derive_health_per_region(snapshot: dict) -> dict[str, int]:
+    if int(snapshot.get("open_alert_count", 0) or 0) == 0:
+        healthy = _HEALTH_BY_TONE["good"]
+        return {
+            "head": healthy,
+            "chest": healthy,
+            "abdomen": healthy,
+            "legs": healthy,
+        }
+
     metrics = {m["metric"]: m for m in snapshot.get("metrics", [])}
     return {
         "head": _HEALTH_BY_TONE[_worst_tone(metrics, ["sleep_duration_hours"])],
@@ -243,11 +252,20 @@ import {{ GLTFLoader }} from 'three/examples/jsm/loaders/GLTFLoader';
 const stageEl = document.getElementById('stage');
 const canvas = document.getElementById('twin');
 const loadingEl = document.getElementById('loading');
+const defaults = window.TWEAK_DEFAULTS;
 
 const cfg = {{
-  state: 'steady',
-  health: {{ head: 0.82, chest: 0.55, abdomen: 0.70, legs: 0.28 }},
-  overall: 0.59, density: 40000, size: 180, spin: 30,
+  state: defaults.state,
+  health: {{
+    head: defaults.hHead / 100,
+    chest: defaults.hChest / 100,
+    abdomen: defaults.hAbdomen / 100,
+    legs: defaults.hLegs / 100,
+  }},
+  overall: defaults.overall / 100,
+  density: defaults.density,
+  size: defaults.size,
+  spin: defaults.spin,
 }};
 window.__twin = {{ cfg }};
 
@@ -700,6 +718,7 @@ window.__twin.refreshColors = rebuildColors;
     }};
     cfg.density = d.density; cfg.size = d.size; cfg.spin = d.spin;
     applyHealthToUI();
+    if (window.__twin && window.__twin.refreshColors) window.__twin.refreshColors();
   }});
 }})();
 </script>

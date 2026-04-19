@@ -1,0 +1,42 @@
+{
+  "name": "vitalclaw-health-routing",
+  "version": "0.1.0",
+  "description": "Project-scoped routing so Codex answers health questions from VitalClaw first.",
+  "author": {
+    "name": "VitalClaw",
+    "email": "support@vitalclaw.local",
+    "url": "https://github.com/kuzeze/VitalClaw"
+  },
+  "homepage": "https://github.com/kuzeze/VitalClaw",
+  "repository": "https://github.com/kuzeze/VitalClaw",
+  "license": "MIT",
+  "keywords": [
+    "vitalclaw",
+    "health",
+    "codex",
+    "routing",
+    "mcp"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "VitalClaw Health Routing",
+    "shortDescription": "Routes project health questions through VitalClaw before generic reasoning",
+    "longDescription": "Use the VitalClaw Health Routing plugin to answer current-status, recovery, trend, and alert questions from this workspace by calling VitalClaw's top-level answer wrapper first.",
+    "developerName": "VitalClaw",
+    "category": "Health",
+    "capabilities": [
+      "Interactive",
+      "Read"
+    ],
+    "websiteURL": "https://github.com/kuzeze/VitalClaw",
+    "privacyPolicyURL": "https://github.com/kuzeze/VitalClaw",
+    "termsOfServiceURL": "https://github.com/kuzeze/VitalClaw",
+    "defaultPrompt": [
+      "What is my health now?",
+      "Show me what VitalClaw sees today.",
+      "Do I have any recovery alerts right now?"
+    ],
+    "brandColor": "#216343"
+  }
+}

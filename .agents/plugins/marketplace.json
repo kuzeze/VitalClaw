@@ -1,0 +1,20 @@
+{
+  "name": "vitalclaw-local",
+  "interface": {
+    "displayName": "VitalClaw Local Plugins"
+  },
+  "plugins": [
+    {
+      "name": "vitalclaw-health-routing",
+      "source": {
+        "source": "local",
+        "path": "./plugins/vitalclaw-health-routing"
+      },
+      "policy": {
+        "installation": "INSTALLED_BY_DEFAULT",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Health"
+    }
+  ]
+}

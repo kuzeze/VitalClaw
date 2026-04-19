@@ -15,6 +15,26 @@ AlertState = Literal[
     "escalated",
 ]
 
+BriefingMode = Literal[
+    "status_plus_key_metrics",
+    "status_only",
+    "full_snapshot",
+]
+
+DEFAULT_BRIEFING_MODE: BriefingMode = "status_plus_key_metrics"
+BRIEFING_MODES: tuple[BriefingMode, ...] = (
+    "status_plus_key_metrics",
+    "status_only",
+    "full_snapshot",
+)
+DEFAULT_PREFERRED_METRICS = [
+    "sleep_duration_hours",
+    "resting_heart_rate",
+    "heart_rate_variability_sdnn",
+    "respiratory_rate",
+    "wrist_temperature_celsius",
+]
+
 
 @dataclass(slots=True)
 class Observation:
@@ -115,3 +135,53 @@ class InterventionOutcome:
     action: str
     outcome: str
     recorded_at: datetime
+
+
+@dataclass(slots=True)
+class UserProfile:
+    """Durable per-project preferences for Codex bootstrap behavior."""
+
+    auto_brief_enabled: bool
+    always_sync_on_brief: bool
+    default_briefing_mode: BriefingMode
+    preferred_metrics: list[str] = field(default_factory=list)
+    standing_instruction: str | None = None
+    updated_at: datetime | None = None
+
+
+@dataclass(slots=True)
+class BriefingMetric:
+    """Compact metric card for the Codex bootstrap briefing."""
+
+    metric: str
+    label: str
+    current_display: str
+    baseline_display: str
+    delta: str
+    tone: str
+
+
+@dataclass(slots=True)
+class BriefingSyncStatus:
+    """Sync metadata attached to a health briefing."""
+
+    refreshed_now: bool
+    status: str
+    last_success_at: str | None = None
+    last_sync_from: str | None = None
+    last_sync_to: str | None = None
+
+
+@dataclass(slots=True)
+class Briefing:
+    """Fresh-chat bootstrap payload for Codex."""
+
+    profile: UserProfile
+    sync: BriefingSyncStatus
+    latest_feature_date: str | None
+    status: dict[str, str]
+    open_alert_count: int
+    metrics: list[BriefingMetric] = field(default_factory=list)
+    missing_data_notes: list[str] = field(default_factory=list)
+    standing_instruction: str | None = None
+    snapshot: dict[str, object] | None = None

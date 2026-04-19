@@ -13,12 +13,16 @@ from vitalclaw.schema import (
     AlertCandidate,
     AlertState,
     BaselineProfile,
+    BRIEFING_MODES,
     ContextEvent,
     DailyFeature,
+    DEFAULT_BRIEFING_MODE,
+    DEFAULT_PREFERRED_METRICS,
     Episode,
     InterventionOutcome,
     Observation,
     StoredAlert,
+    UserProfile,
 )
 
 
@@ -26,6 +30,16 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS metadata (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS user_profile (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    auto_brief_enabled INTEGER NOT NULL,
+    always_sync_on_brief INTEGER NOT NULL,
+    default_briefing_mode TEXT NOT NULL,
+    preferred_metrics_json TEXT NOT NULL,
+    standing_instruction TEXT,
+    updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS sync_runs (
@@ -154,6 +168,72 @@ class Repository:
     def get_metadata(self, key: str) -> str | None:
         row = self.connection.execute("SELECT value FROM metadata WHERE key = ?", (key,)).fetchone()
         return str(row["value"]) if row else None
+
+    def get_user_profile(self) -> UserProfile:
+        row = self.connection.execute("SELECT * FROM user_profile WHERE id = 1").fetchone()
+        if row is None:
+            self._save_user_profile(_default_user_profile())
+            row = self.connection.execute("SELECT * FROM user_profile WHERE id = 1").fetchone()
+        return _row_to_user_profile(row)
+
+    def update_user_profile(
+        self,
+        *,
+        auto_brief_enabled: bool | None = None,
+        always_sync_on_brief: bool | None = None,
+        default_briefing_mode: str | None = None,
+        preferred_metrics: list[str] | None = None,
+        standing_instruction: str | None = None,
+    ) -> UserProfile:
+        existing = self.get_user_profile()
+        mode = default_briefing_mode or existing.default_briefing_mode
+        if mode not in BRIEFING_MODES:
+            raise ValueError(
+                f"Unsupported briefing mode {mode!r}. Expected one of: {', '.join(BRIEFING_MODES)}"
+            )
+        profile = UserProfile(
+            auto_brief_enabled=existing.auto_brief_enabled if auto_brief_enabled is None else auto_brief_enabled,
+            always_sync_on_brief=(
+                existing.always_sync_on_brief if always_sync_on_brief is None else always_sync_on_brief
+            ),
+            default_briefing_mode=mode,
+            preferred_metrics=existing.preferred_metrics if preferred_metrics is None else list(preferred_metrics),
+            standing_instruction=(
+                existing.standing_instruction
+                if standing_instruction is None
+                else (standing_instruction.strip() or None)
+            ),
+        )
+        self._save_user_profile(profile)
+        return self.get_user_profile()
+
+    def _save_user_profile(self, profile: UserProfile) -> None:
+        updated_at = (profile.updated_at or datetime.now().astimezone()).isoformat()
+        self.connection.execute(
+            """
+            INSERT INTO user_profile(
+                id, auto_brief_enabled, always_sync_on_brief, default_briefing_mode, preferred_metrics_json,
+                standing_instruction, updated_at
+            )
+            VALUES (1, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                auto_brief_enabled = excluded.auto_brief_enabled,
+                always_sync_on_brief = excluded.always_sync_on_brief,
+                default_briefing_mode = excluded.default_briefing_mode,
+                preferred_metrics_json = excluded.preferred_metrics_json,
+                standing_instruction = excluded.standing_instruction,
+                updated_at = excluded.updated_at
+            """,
+            (
+                int(profile.auto_brief_enabled),
+                int(profile.always_sync_on_brief),
+                profile.default_briefing_mode,
+                json.dumps(profile.preferred_metrics),
+                profile.standing_instruction,
+                updated_at,
+            ),
+        )
+        self.connection.commit()
 
     def create_sync_run(self, *, started_at: datetime, from_date: str, to_date: str) -> int:
         cursor = self.connection.execute(
@@ -646,4 +726,26 @@ def _row_to_context_event(row: sqlite3.Row) -> ContextEvent:
         effective_date=date.fromisoformat(str(row["effective_date"])),
         created_at=datetime.fromisoformat(str(row["created_at"])),
         episode_id=str(row["episode_id"]) if row["episode_id"] is not None else None,
+    )
+
+
+def _default_user_profile() -> UserProfile:
+    return UserProfile(
+        auto_brief_enabled=True,
+        always_sync_on_brief=True,
+        default_briefing_mode=DEFAULT_BRIEFING_MODE,
+        preferred_metrics=list(DEFAULT_PREFERRED_METRICS),
+        standing_instruction=None,
+        updated_at=datetime.now().astimezone(),
+    )
+
+
+def _row_to_user_profile(row: sqlite3.Row) -> UserProfile:
+    return UserProfile(
+        auto_brief_enabled=bool(int(row["auto_brief_enabled"])),
+        always_sync_on_brief=bool(int(row["always_sync_on_brief"])),
+        default_briefing_mode=str(row["default_briefing_mode"]),
+        preferred_metrics=list(json.loads(str(row["preferred_metrics_json"]))),
+        standing_instruction=str(row["standing_instruction"]) if row["standing_instruction"] is not None else None,
+        updated_at=datetime.fromisoformat(str(row["updated_at"])),
     )

@@ -3,7 +3,7 @@ from pathlib import Path
 from starlette.testclient import TestClient
 
 from vitalclaw.service import dashboard_snapshot, initialize_project
-from vitalclaw.ui import build_ui_app
+from vitalclaw.ui import _HEALTH_BY_TONE, _derive_health_per_region, build_ui_app
 
 from tests.helpers import write_fake_he
 
@@ -26,6 +26,50 @@ def test_dashboard_snapshot_returns_monitoring_console_shape(tmp_path: Path) -> 
     assert snapshot["open_alert_count"] == 1
     assert len(snapshot["metrics"]) == 5
     assert snapshot["metrics"][0]["trend"]
+
+
+def test_twin_health_is_uniform_green_without_active_alert() -> None:
+    snapshot = {
+        "open_alert_count": 0,
+        "metrics": [
+            {"metric": "sleep_duration_hours", "tone": "good"},
+            {"metric": "resting_heart_rate", "tone": "good"},
+            {"metric": "heart_rate_variability_sdnn", "tone": "alert"},
+            {"metric": "respiratory_rate", "tone": "good"},
+            {"metric": "wrist_temperature_celsius", "tone": "warn"},
+        ],
+    }
+
+    health = _derive_health_per_region(snapshot)
+
+    assert health == {
+        "head": _HEALTH_BY_TONE["good"],
+        "chest": _HEALTH_BY_TONE["good"],
+        "abdomen": _HEALTH_BY_TONE["good"],
+        "legs": _HEALTH_BY_TONE["good"],
+    }
+
+
+def test_twin_health_keeps_region_mapping_with_active_alert() -> None:
+    snapshot = {
+        "open_alert_count": 1,
+        "metrics": [
+            {"metric": "sleep_duration_hours", "tone": "warn"},
+            {"metric": "resting_heart_rate", "tone": "good"},
+            {"metric": "heart_rate_variability_sdnn", "tone": "alert"},
+            {"metric": "respiratory_rate", "tone": "good"},
+            {"metric": "wrist_temperature_celsius", "tone": "warn"},
+        ],
+    }
+
+    health = _derive_health_per_region(snapshot)
+
+    assert health == {
+        "head": _HEALTH_BY_TONE["warn"],
+        "chest": _HEALTH_BY_TONE["alert"],
+        "abdomen": _HEALTH_BY_TONE["warn"],
+        "legs": _HEALTH_BY_TONE["good"],
+    }
 
 
 def test_ui_renders_twin_panel(tmp_path: Path) -> None:

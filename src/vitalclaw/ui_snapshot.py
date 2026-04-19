@@ -6,6 +6,7 @@ from dataclasses import asdict
 from datetime import date, datetime
 from statistics import mean
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from vitalclaw.monitor.baselines import compute_baseline_profiles
 from vitalclaw.schema import DailyFeature, StoredAlert
@@ -22,7 +23,7 @@ METRIC_LABELS = {
 
 def dashboard_snapshot(*, project_root=None) -> dict[str, Any]:
     """Prepare a compact monitoring console snapshot."""
-    _, _, repository = _load_runtime(project_root)
+    _, config, repository = _load_runtime(project_root)
     features = repository.list_daily_features()
     latest_feature = repository.latest_feature()
     active_alerts = repository.list_open_alerts()
@@ -38,7 +39,7 @@ def dashboard_snapshot(*, project_root=None) -> dict[str, Any]:
                 "tone": "warn",
             },
             "latest_feature_date": None,
-            "last_sync_at": last_sync_at,
+            "last_sync_at": _format_timestamp(last_sync_at, config.timezone),
             "metrics": [],
             "open_alert_count": 0,
             "latest_alert": None,
@@ -56,7 +57,7 @@ def dashboard_snapshot(*, project_root=None) -> dict[str, Any]:
     return {
         "status": status,
         "latest_feature_date": latest_feature.feature_date.isoformat(),
-        "last_sync_at": _format_timestamp(last_sync_at),
+        "last_sync_at": _format_timestamp(last_sync_at, config.timezone),
         "metrics": metrics,
         "signal_summary": _signal_summary(metrics),
         "open_alert_count": len(active_alerts),
@@ -239,10 +240,22 @@ def _format_metric(metric: str, value: float) -> str:
     return f"{value:.2f}"
 
 
-def _format_timestamp(value: str | None) -> str | None:
+def _format_timestamp(value: str | None, timezone_name: str | None = None) -> str | None:
     if not value:
         return None
-    return datetime.fromisoformat(value).strftime("%Y-%m-%d %H:%M")
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        return parsed.strftime("%Y-%m-%d %H:%M")
+
+    if timezone_name:
+        try:
+            parsed = parsed.astimezone(ZoneInfo(timezone_name))
+        except Exception:
+            parsed = parsed.astimezone()
+    else:
+        parsed = parsed.astimezone()
+
+    return parsed.strftime("%Y-%m-%d %H:%M")
 
 
 def _episode_dates(repository, alert: StoredAlert) -> set[date]:
