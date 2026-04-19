@@ -14,9 +14,9 @@
   <img alt="MCP" src="https://img.shields.io/badge/MCP-ready-6C4CF1">
 </p>
 
-VitalClaw is a local-first personal health observability engine for Apple Health, built to work naturally with Codex.
+VitalClaw is a local-first personal health observability engine for wearable and recovery data, built to work naturally with Codex.
 
-It pulls your Apple Health data locally, learns your baseline over time, and stays quiet unless your data meaningfully drifts from your normal.
+It pulls health data into a project-local runtime, learns your baseline over time, and stays quiet unless your data meaningfully drifts from your normal.
 
 This is not a generic AI health chatbot.  
 This is not a diagnosis product.  
@@ -41,9 +41,10 @@ The core question is:
 
 Current v1 scope:
 
-- `Apple Health only`, via `HealthExport Remote`
+- `multiple ingest paths`: `HealthExport Remote` and `Open Wearables`
+- `provider-flexible`: Apple Health first, with `Whoop` and other OW-backed providers where available
 - `local-first`, with project-local SQLite under `.vitalclaw/`
-- `Codex-native`, with CLI + MCP surfaces
+- `Codex-native`, with CLI + MCP + a local monitoring panel at `localhost:3000`
 - `baseline-aware`, not population-threshold-first
 - `precision-first`, with one alert family in v1: `recovery_suppression`
 - `quiet by default`, with scheduled checks and selective alerts
@@ -113,18 +114,29 @@ Missing context: Any symptoms in the last 48 hours?
 History: No prior similar episode has been recorded.
 ```
 
+```text
+$ vitalclaw briefing
+source: open_wearables
+providers: apple, whoop
+status: mild drift
+open alerts: 0
+latest feature day: 2026-04-18
+sleep: 9.14 h vs baseline 7.35 h
+resting HR: 59 bpm vs baseline 62 bpm
+respiratory rate: 16.2/min vs baseline 16.4/min
+```
+
 ## Workflow
 
 ```mermaid
 flowchart LR
-    A["Apple Health"] --> B["HealthExport Remote"]
-    B --> C["Official he CLI"]
-    C --> D["Ingest / Normalize"]
+    A["Apple Health via HealthExport"] --> D["Ingest / Normalize"]
+    B["Open Wearables (Apple, Whoop, others)"] --> D
     D --> E["Local SQLite"]
     E --> F["Daily Features"]
     F --> G["Baseline Engine"]
     G --> H["Alert Policies"]
-    H --> I["MCP Server"]
+    H --> I["Briefing / Answer / MCP / UI"]
     I --> J["Codex"]
 ```
 
@@ -148,7 +160,7 @@ VitalClaw currently monitors:
 
 ## Quick Start
 
-### Easiest Path
+### Health Export Remote
 
 1. Clone the repo.
 2. Add it as a Codex `project`.
@@ -175,7 +187,63 @@ Codex should handle the rest:
 
 ```bash
 python3 -m pip install -e .
-vitalclaw init --account-key "<your-account-key>"
+vitalclaw init --source health_export --account-key "<your-account-key>"
+```
+
+### Open Wearables + Official App
+
+This path uses Open Wearables as the primary VitalClaw data source and the official Open Wearables TestFlight app as the Apple Health background-sync bridge.
+
+1. Clone the repo.
+2. Install the local package:
+
+```bash
+python3 -m pip install -e .
+```
+
+3. Generate an Open Wearables API key from the Open Wearables dashboard.
+4. Initialize VitalClaw with Open Wearables:
+
+```bash
+vitalclaw init --source open_wearables --ow-api-key "<your-open-wearables-api-key>" \
+  --ow-api-url "https://api.openwearables.io"
+```
+
+5. VitalClaw will create or reuse one Open Wearables user and print an invitation code.
+6. Open the official Open Wearables TestFlight app.
+7. Enter the API host URL from the CLI output.
+8. Paste the invitation code into the app.
+9. Grant Apple Health permissions and enable background sync.
+10. After the first sync completes, run:
+
+```bash
+vitalclaw sync
+vitalclaw briefing
+```
+
+Helpful Open Wearables commands:
+
+```bash
+vitalclaw open-wearables status
+vitalclaw open-wearables connect-app
+vitalclaw open-wearables doctor
+```
+
+### Self-Hosted Open Wearables
+
+VitalClaw also supports self-hosted Open Wearables instances, including local Docker deployments.
+
+If your local OW backend already has connected providers, VitalClaw can reuse that user directly and skip the app-pairing step.
+
+```bash
+vitalclaw init --source open_wearables \
+  --ow-api-key "<your-open-wearables-api-key>" \
+  --ow-api-url "http://127.0.0.1:8000" \
+  --ow-developer-email "<your-developer-email>" \
+  --ow-developer-password "<your-developer-password>"
+
+vitalclaw open-wearables doctor
+vitalclaw open-wearables status
 ```
 
 ## Main Commands
@@ -187,6 +255,14 @@ vitalclaw alerts
 vitalclaw explain --latest
 vitalclaw context add --type symptoms --note "sore throat"
 vitalclaw open-alerts
+vitalclaw briefing
+vitalclaw answer --question "What is my health now?"
+vitalclaw profile get
+vitalclaw profile set --standing-instruction "Always extract key metrics first."
+vitalclaw open-wearables status
+vitalclaw open-wearables connect-app
+vitalclaw open-wearables doctor
+vitalclaw ui
 vitalclaw mcp
 ```
 
@@ -206,6 +282,11 @@ Use `Command + Shift + .` to show them.
 What is working now:
 
 - real `HealthExport Remote` integration
+- `Open Wearables` integration with official mobile app bootstrap
+- self-hosted `Open Wearables` support for local Docker-backed setups
+- local monitoring panel at `http://localhost:3000`
+- durable bootstrap profile + fresh-chat briefing
+- health question answering from live VitalClaw state
 - local storage
 - baseline + recovery suppression monitoring
 - context event capture
@@ -217,8 +298,14 @@ What is not here yet:
 - genes
 - medication intelligence
 - multiple alert families
-- web UI
 - consumer-grade onboarding
+- polished multi-user collaboration workflows
+
+Known gaps:
+
+- self-hosted `Open Wearables` recovery-style normalized summaries are still uneven across providers
+- some provider-specific metrics may be present in raw/timeseries form before they are available in a fully normalized daily summary
+- HRV interoperability is not complete across every source path yet
 
 ## Repo Map
 
@@ -226,7 +313,7 @@ What is not here yet:
 docs/                  product and system docs
 docs/assets/           logos and README visuals
 src/vitalclaw/cli.py   CLI entrypoint
-src/vitalclaw/external/ official HealthExport integration
+src/vitalclaw/external/ official HealthExport + Open Wearables integrations
 src/vitalclaw/ingest/  observation normalization
 src/vitalclaw/features/ daily feature materialization
 src/vitalclaw/monitor/ baseline + alert policies
@@ -278,9 +365,11 @@ Good contributions are likely to be:
 
 - better alert evaluation logic
 - baseline robustness improvements
+- stronger Open Wearables normalization and cross-provider metric handling
 - safer wording and UX around alerts
 - stronger local-first privacy and runtime ergonomics
 - clearer integrations with Codex skills / MCP / automation
+- better panel interactions and monitoring UX
 
 If you want to contribute, start by reading the docs in [`docs/`](./docs).
 

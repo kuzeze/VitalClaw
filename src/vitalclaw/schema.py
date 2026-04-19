@@ -178,6 +178,8 @@ class Briefing:
 
     profile: UserProfile
     sync: BriefingSyncStatus
+    active_source: str
+    connected_providers: list[str]
     latest_feature_date: str | None
     status: dict[str, str]
     open_alert_count: int

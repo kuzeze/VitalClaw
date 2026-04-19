@@ -5,17 +5,23 @@ from __future__ import annotations
 from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 import json
+import subprocess
+import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 from vitalclaw.external.healthexport import HealthExportCLI
+from vitalclaw.external.open_wearables import OpenWearablesClient
 from vitalclaw.features.materialize import materialize_daily_features
 from vitalclaw.ingest.health_export_remote import extract_observations, resolve_required_types
+from vitalclaw.ingest.open_wearables import extract_observations as extract_open_wearables_observations
 from vitalclaw.monitor.baselines import compute_baseline_profiles
 from vitalclaw.monitor.recovery import evaluate_recovery_suppression
 from vitalclaw.runtime import (
     AppConfig,
+    DEFAULT_OPEN_WEARABLES_API_URL,
     RuntimePaths,
     ensure_runtime_dirs,
     get_runtime_paths,
@@ -29,6 +35,7 @@ from vitalclaw.schema import (
     Briefing,
     BriefingMetric,
     BriefingSyncStatus,
+    DEFAULT_PREFERRED_METRICS,
     UserProfile,
 )
 from vitalclaw.storage.db import Repository, connect, initialize
@@ -37,8 +44,13 @@ from vitalclaw.storage.db import Repository, connect, initialize
 def initialize_project(
     *,
     project_root: Path | None = None,
-    account_key: str,
+    account_key: str | None = None,
     he_path: str | None = None,
+    source: str = "health_export",
+    ow_api_key: str | None = None,
+    ow_api_url: str | None = None,
+    ow_developer_email: str | None = None,
+    ow_developer_password: str | None = None,
 ) -> dict[str, Any]:
     """Initialize the local VitalClaw runtime and perform the first sync."""
     paths = get_runtime_paths(project_root)
@@ -49,12 +61,28 @@ def initialize_project(
     repository = Repository(connection)
 
     config = load_config(paths) or AppConfig(timezone=local_timezone_name())
+    config.source = source
+    config.initialized_at = datetime.now(timezone.utc).isoformat()
+
+    if source == "open_wearables":
+        return _initialize_open_wearables_project(
+            paths=paths,
+            repository=repository,
+            config=config,
+            ow_api_key=ow_api_key,
+            ow_api_url=ow_api_url,
+            ow_developer_email=ow_developer_email,
+            ow_developer_password=ow_developer_password,
+        )
+
+    if not account_key:
+        raise RuntimeError("Health Export initialization requires --account-key.")
+
     cli = HealthExportCLI(paths=paths, he_path=he_path or config.he_path, api_url=config.api_url)
     resolved_he_path = str(cli.ensure_available())
     auth_status = cli.configure_account_key(account_key)
     required_types = resolve_required_types(cli.list_types())
     config.he_path = resolved_he_path
-    config.initialized_at = datetime.now(timezone.utc).isoformat()
     config.required_types = {metric: health_type.id for metric, health_type in required_types.items()}
     save_config(paths, config)
 
@@ -62,10 +90,14 @@ def initialize_project(
     feature_result = build_latest_features(project_root=paths.project_root)
     alert_result = check_alerts(project_root=paths.project_root)
 
+    repository.set_metadata("active_source", "health_export")
+    repository.set_metadata("connected_providers_json", json.dumps(["health_export_remote"]))
+
     return {
         "runtime_dir": str(paths.runtime_dir),
         "db_path": str(paths.db_path),
         "config_path": str(paths.config_path),
+        "source": config.source,
         "he_path": resolved_he_path,
         "authenticated": auth_status.authenticated,
         "timezone": config.timezone,
@@ -84,6 +116,15 @@ def sync_remote_data(
 ) -> dict[str, Any]:
     """Fetch remote health data, persist raw snapshots, and upsert observations."""
     paths, config, repository = _load_runtime(project_root)
+    if config.source == "open_wearables":
+        return _sync_open_wearables_data(
+            paths=paths,
+            config=config,
+            repository=repository,
+            from_date=from_date,
+            to_date=to_date,
+        )
+
     cli = HealthExportCLI(paths=paths, he_path=config.he_path, api_url=config.api_url)
 
     effective_to = to_date or _today_iso()
@@ -121,13 +162,302 @@ def sync_remote_data(
         repository.set_metadata("last_success_at", finished_at.isoformat())
         repository.set_metadata("last_sync_from", effective_from)
         repository.set_metadata("last_sync_to", effective_to)
+        repository.set_metadata("active_source", "health_export")
+        repository.set_metadata("connected_providers_json", json.dumps(["health_export_remote"]))
         return {
             "status": "success",
+            "source": "health_export",
             "from_date": effective_from,
             "to_date": effective_to,
             "raw_snapshot_path": raw_snapshot_path,
             "processed_observations": processed,
             "stored_observations": repository.observation_count(),
+            "connected_providers": ["health_export_remote"],
+        }
+    except Exception as exc:  # noqa: BLE001
+        finished_at = datetime.now(timezone.utc)
+        repository.finish_sync_run(
+            sync_run_id=sync_run_id,
+            finished_at=finished_at,
+            status="failed",
+            raw_snapshot_path=raw_snapshot_path,
+            observation_count=len(observations),
+            message=str(exc),
+        )
+        raise
+
+
+def open_wearables_connect_app(*, project_root: Path | None = None) -> dict[str, Any]:
+    """Generate a fresh Open Wearables invitation code and return app connection instructions."""
+    paths, config, _ = _load_runtime(project_root)
+    doctor = _ensure_local_open_wearables_running(config)
+    if doctor.get("mode") == "local" and not doctor.get("api_reachable"):
+        raise RuntimeError(doctor.get("error") or "Local Open Wearables backend is unavailable.")
+    client = _load_open_wearables_client(config)
+    user_id = _ensure_open_wearables_user(client, config)
+    invitation = _generate_open_wearables_invitation(client, config, user_id)
+    config.ow_last_invitation_code = str(invitation.get("code") or "")
+    save_config(paths, config)
+    return {
+        "source": config.source,
+        "api_url": config.ow_api_url,
+        "user_id": user_id,
+        "invitation_code": config.ow_last_invitation_code,
+        "instructions": _open_wearables_app_instructions(config.ow_api_url or DEFAULT_OPEN_WEARABLES_API_URL, config.ow_last_invitation_code),
+    }
+
+
+def open_wearables_status(*, project_root: Path | None = None) -> dict[str, Any]:
+    """Return Open Wearables connection status for the current project."""
+    _, config, repository = _load_runtime(project_root)
+    doctor = open_wearables_doctor(project_root=project_root)
+    if doctor.get("mode") == "local" and not doctor.get("api_reachable"):
+        return {
+            "source": config.source,
+            "api_url": config.ow_api_url,
+            "user_id": config.ow_user_id,
+            "last_invitation_code": config.ow_last_invitation_code,
+            "connections": [],
+            "connected_providers": [],
+            "last_success_at": repository.get_metadata("last_success_at"),
+            "doctor": doctor,
+        }
+    client = _load_open_wearables_client(config)
+    user_id = config.ow_user_id
+    if not user_id:
+        return {
+            "source": config.source,
+            "api_url": config.ow_api_url,
+            "user_id": None,
+            "last_invitation_code": config.ow_last_invitation_code,
+            "connections": [],
+            "connected_providers": [],
+            "last_success_at": repository.get_metadata("last_success_at"),
+            "doctor": doctor,
+        }
+    connections = client.list_connections(user_id)
+    connected_providers = sorted({connection.provider for connection in connections if connection.status == "active"})
+    return {
+        "source": config.source,
+        "api_url": config.ow_api_url,
+        "user_id": user_id,
+        "last_invitation_code": config.ow_last_invitation_code,
+        "connections": [
+            {
+                "id": connection.id,
+                "provider": connection.provider,
+                "status": connection.status,
+                "last_synced_at": connection.last_synced_at,
+                "provider_username": connection.provider_username,
+            }
+            for connection in connections
+        ],
+        "connected_providers": connected_providers,
+        "last_success_at": repository.get_metadata("last_success_at"),
+        "doctor": doctor,
+    }
+
+
+def open_wearables_doctor(*, project_root: Path | None = None) -> dict[str, Any]:
+    """Inspect and best-effort recover a local Open Wearables instance."""
+    _, config, _ = _load_runtime(project_root)
+    if not _is_local_open_wearables_api_url(config.ow_api_url):
+        return {
+            "mode": "remote",
+            "api_url": config.ow_api_url or DEFAULT_OPEN_WEARABLES_API_URL,
+            "api_reachable": _open_wearables_api_reachable(config.ow_api_url or DEFAULT_OPEN_WEARABLES_API_URL),
+            "frontend_reachable": None,
+            "containers": {},
+            "recovered": False,
+        }
+
+    return _ensure_local_open_wearables_running(config)
+
+
+def _initialize_open_wearables_project(
+    *,
+    paths: RuntimePaths,
+    repository: Repository,
+    config: AppConfig,
+    ow_api_key: str | None,
+    ow_api_url: str | None,
+    ow_developer_email: str | None,
+    ow_developer_password: str | None,
+) -> dict[str, Any]:
+    config.ow_api_key = (ow_api_key or config.ow_api_key or "").strip() or None
+    config.ow_api_url = (ow_api_url or config.ow_api_url or DEFAULT_OPEN_WEARABLES_API_URL).strip()
+    config.ow_developer_email = (ow_developer_email or config.ow_developer_email or "").strip() or None
+    config.ow_developer_password = (ow_developer_password or config.ow_developer_password or "").strip() or None
+    if not config.ow_api_key:
+        raise RuntimeError("Open Wearables initialization requires --ow-api-key.")
+    doctor = _ensure_local_open_wearables_running(config)
+    if doctor.get("mode") == "local" and not doctor.get("api_reachable"):
+        raise RuntimeError(doctor.get("error") or "Local Open Wearables backend is unavailable.")
+
+    client = _load_open_wearables_client(config)
+    user_id = _ensure_open_wearables_user(client, config)
+    config.ow_user_id = user_id
+    status = _open_wearables_status_data(config, repository, client)
+    invitation: dict[str, Any] | None = None
+    if not status["connected_providers"]:
+        invitation = _generate_open_wearables_invitation(client, config, user_id)
+        config.ow_last_invitation_code = str(invitation.get("code") or "")
+    save_config(paths, config)
+    repository.set_metadata("active_source", "open_wearables")
+    repository.set_metadata("connected_providers_json", json.dumps(status["connected_providers"]))
+
+    sync_result: dict[str, Any] | None = None
+    feature_result: dict[str, Any] | None = None
+    alert_result: dict[str, Any] | None = None
+    bootstrap_status = "waiting_for_mobile_sync"
+
+    if status["connected_providers"]:
+        sync_result = sync_remote_data(project_root=paths.project_root, from_date=_days_ago(90), to_date=_today_iso())
+        if int(sync_result.get("stored_observations", 0) or 0) > 0:
+            feature_result = build_latest_features(project_root=paths.project_root)
+            alert_result = check_alerts(project_root=paths.project_root)
+            bootstrap_status = "ready"
+
+    return {
+        "runtime_dir": str(paths.runtime_dir),
+        "db_path": str(paths.db_path),
+        "config_path": str(paths.config_path),
+        "source": config.source,
+        "authenticated": True,
+        "timezone": config.timezone,
+        "bootstrap_status": bootstrap_status,
+        "doctor": doctor,
+        "open_wearables": {
+            "api_url": config.ow_api_url,
+            "user_id": user_id,
+            "invitation_code": config.ow_last_invitation_code,
+            "connected_providers": status["connected_providers"],
+            "instructions": _open_wearables_app_instructions(config.ow_api_url, config.ow_last_invitation_code),
+        },
+        "sync": sync_result,
+        "materialize": feature_result,
+        "alerts": alert_result,
+    }
+
+
+def _sync_open_wearables_data(
+    *,
+    paths: RuntimePaths,
+    config: AppConfig,
+    repository: Repository,
+    from_date: str | None,
+    to_date: str | None,
+) -> dict[str, Any]:
+    doctor = _ensure_local_open_wearables_running(config)
+    if doctor.get("mode") == "local" and not doctor.get("api_reachable"):
+        raise RuntimeError(doctor.get("error") or "Local Open Wearables backend is unavailable.")
+    client = _load_open_wearables_client(config)
+    if not config.ow_user_id:
+        raise RuntimeError("Open Wearables user is not configured. Run `vitalclaw init --source open_wearables --ow-api-key ...` first.")
+
+    effective_to = to_date or _today_iso()
+    if from_date:
+        effective_from = from_date
+    else:
+        last_success = repository.get_metadata("last_success_at")
+        if last_success:
+            effective_from = (datetime.fromisoformat(last_success).date() - timedelta(days=2)).isoformat()
+        else:
+            effective_from = _days_ago(90)
+
+    sync_started = datetime.now(timezone.utc)
+    sync_run_id = repository.create_sync_run(started_at=sync_started, from_date=effective_from, to_date=effective_to)
+    raw_snapshot_path = None
+    observations: list[Any] = []
+    try:
+        connections = client.list_connections(config.ow_user_id)
+        active_connections = [connection for connection in connections if connection.status == "active"]
+        active_providers = sorted({connection.provider for connection in active_connections})
+        repository.set_metadata("active_source", "open_wearables")
+        repository.set_metadata("connected_providers_json", json.dumps(active_providers))
+
+        trigger_results: list[dict[str, Any]] = []
+        for connection in active_connections:
+            if _is_sdk_provider(connection.provider):
+                continue
+            try:
+                trigger_results.append(
+                    {
+                        "provider": connection.provider,
+                        "status": "triggered",
+                        "response": client.trigger_provider_sync(provider=connection.provider, user_id=config.ow_user_id),
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001
+                trigger_results.append({"provider": connection.provider, "status": "failed", "message": str(exc)})
+
+        recovery_summary = _safe_open_wearables_recovery_summary(
+            client,
+            user_id=config.ow_user_id,
+            start_date=effective_from,
+            end_date=effective_to,
+        )
+        sleep_summary = client.get_sleep_summary(
+            user_id=config.ow_user_id,
+            start_date=effective_from,
+            end_date=effective_to,
+        )
+        timeseries = client.get_timeseries(
+            user_id=config.ow_user_id,
+            start_time=_start_of_local_day_utc(effective_from, config.timezone).isoformat(),
+            end_time=_end_of_local_day_utc(effective_to, config.timezone).isoformat(),
+            types=["respiratory_rate", "skin_temperature", "body_temperature"],
+        )
+
+        payload = {
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "from_date": effective_from,
+            "to_date": effective_to,
+            "connections": [
+                {
+                    "id": connection.id,
+                    "provider": connection.provider,
+                    "status": connection.status,
+                    "last_synced_at": connection.last_synced_at,
+                    "provider_username": connection.provider_username,
+                }
+                for connection in connections
+            ],
+            "trigger_results": trigger_results,
+            "recovery_summary": recovery_summary,
+            "sleep_summary": sleep_summary,
+            "timeseries": timeseries,
+        }
+        raw_snapshot_path = _write_raw_snapshot_payload(paths, payload, from_date=effective_from, to_date=effective_to)
+        observations = extract_open_wearables_observations(
+            recovery_summary=recovery_summary,
+            sleep_summary=sleep_summary,
+            timeseries=timeseries,
+            timezone_name=config.timezone,
+        )
+        processed = repository.upsert_observations(observations, sync_run_id=sync_run_id)
+        finished_at = datetime.now(timezone.utc)
+        repository.finish_sync_run(
+            sync_run_id=sync_run_id,
+            finished_at=finished_at,
+            status="success",
+            raw_snapshot_path=raw_snapshot_path,
+            observation_count=processed,
+            message=None,
+        )
+        repository.set_metadata("last_success_at", finished_at.isoformat())
+        repository.set_metadata("last_sync_from", effective_from)
+        repository.set_metadata("last_sync_to", effective_to)
+        return {
+            "status": "success",
+            "source": "open_wearables",
+            "from_date": effective_from,
+            "to_date": effective_to,
+            "raw_snapshot_path": raw_snapshot_path,
+            "processed_observations": processed,
+            "stored_observations": repository.observation_count(),
+            "connected_providers": active_providers,
+            "trigger_results": trigger_results,
         }
     except Exception as exc:  # noqa: BLE001
         finished_at = datetime.now(timezone.utc)
@@ -145,7 +475,7 @@ def sync_remote_data(
 def build_latest_features(*, project_root: Path | None = None) -> dict[str, Any]:
     """Materialize daily features from canonical observations."""
     _, config, repository = _load_runtime(project_root)
-    observations = repository.list_observations(metrics=list(config.required_types.keys()))
+    observations = repository.list_observations(metrics=list(DEFAULT_PREFERRED_METRICS))
     features = materialize_daily_features(observations, timezone_name=config.timezone)
     count = repository.upsert_daily_features(features)
     latest = repository.latest_feature()
@@ -160,7 +490,7 @@ def check_alerts(*, project_root: Path | None = None) -> dict[str, Any]:
     """Evaluate the latest feature day and update alert state."""
     _, _, repository = _load_runtime(project_root)
     features = repository.list_daily_features()
-    latest = features[-1] if features else None
+    latest = _select_monitorable_feature(features)
     if latest is None:
         return {"status": "empty", "message": "No materialized daily features are available yet."}
 
@@ -325,6 +655,8 @@ def answer_health_question(*, question: str, project_root: Path | None = None) -
 
     return {
         "question": clean_question,
+        "active_source": briefing.get("active_source"),
+        "connected_providers": list(briefing.get("connected_providers") or []),
         "status": dict(briefing.get("status") or {}),
         "freshness": freshness,
         "answer": _compose_health_answer(clean_question, briefing, open_alerts, freshness),
@@ -336,7 +668,7 @@ def answer_health_question(*, question: str, project_root: Path | None = None) -
 
 def _build_briefing(*, project_root: Path | None = None, force_refresh: bool | None = None) -> Briefing:
     """Internal briefing builder shared by bootstrap and answer wrapper."""
-    _, _, repository = _load_runtime(project_root)
+    _, config, repository = _load_runtime(project_root)
     profile = repository.get_user_profile()
     refreshed_now = False
     sync_status = "cached"
@@ -364,6 +696,8 @@ def _build_briefing(*, project_root: Path | None = None, force_refresh: bool | N
             last_sync_from=repository.get_metadata("last_sync_from"),
             last_sync_to=repository.get_metadata("last_sync_to"),
         ),
+        active_source=str(snapshot.get("active_source") or config.source),
+        connected_providers=[str(item) for item in snapshot.get("connected_providers", [])],
         latest_feature_date=snapshot.get("latest_feature_date"),
         status=dict(snapshot.get("status") or {}),
         open_alert_count=int(snapshot.get("open_alert_count", 0) or 0),
@@ -389,7 +723,10 @@ def _load_runtime(project_root: Path | None = None) -> tuple[RuntimePaths, AppCo
     initialize(connection)
     config = load_config(paths)
     if config is None:
-        raise RuntimeError("VitalClaw is not initialized. Run `vitalclaw init --account-key <key>` first.")
+        raise RuntimeError(
+            "VitalClaw is not initialized. Run `vitalclaw init --source health_export --account-key <key>` "
+            "or `vitalclaw init --source open_wearables --ow-api-key <key>` first."
+        )
     return paths, config, Repository(connection)
 
 
@@ -403,6 +740,19 @@ def _write_raw_snapshot(paths: RuntimePaths, packages: list[dict[str, Any]], *, 
         "packages": packages,
     }
     snapshot_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return str(snapshot_path)
+
+
+def _write_raw_snapshot_payload(paths: RuntimePaths, payload: dict[str, Any], *, from_date: str, to_date: str) -> str:
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    snapshot_path = paths.raw_dir / f"sync-{timestamp}.json"
+    envelope = {
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "from_date": from_date,
+        "to_date": to_date,
+        "payload": payload,
+    }
+    snapshot_path.write_text(json.dumps(envelope, indent=2), encoding="utf-8")
     return str(snapshot_path)
 
 
@@ -511,6 +861,8 @@ def _briefing_to_dict(briefing: Briefing) -> dict[str, Any]:
             "last_sync_from": briefing.sync.last_sync_from,
             "last_sync_to": briefing.sync.last_sync_to,
         },
+        "active_source": briefing.active_source,
+        "connected_providers": list(briefing.connected_providers),
         "latest_feature_date": briefing.latest_feature_date,
         "status": dict(briefing.status),
         "open_alert_count": briefing.open_alert_count,
@@ -588,6 +940,8 @@ def _build_data_points_used(
         f"Latest completed feature day: {briefing.get('latest_feature_date') or 'unknown'}",
         f"Last successful sync: {freshness.get('last_success_at_local') or freshness.get('last_success_at') or 'unknown'}",
         f"Open alerts: {int(briefing.get('open_alert_count', 0) or 0)}",
+        f"Active source: {briefing.get('active_source') or 'unknown'}",
+        "Connected providers: " + ", ".join(briefing.get("connected_providers") or ["none"]),
     ]
     for metric in briefing.get("metrics", [])[:5]:
         points.append(
@@ -729,6 +1083,17 @@ def _metric_label(metric: str) -> str:
     return metric.replace("_", " ").title()
 
 
+def _select_monitorable_feature(features: list[DailyFeature], *, minimum_metrics: int = 2) -> DailyFeature | None:
+    if not features:
+        return None
+    preferred = set(DEFAULT_PREFERRED_METRICS)
+    for feature in reversed(features):
+        metric_count = sum(1 for metric in feature.metrics if metric in preferred)
+        if metric_count >= minimum_metrics:
+            return feature
+    return features[-1]
+
+
 def _format_timestamp_local(value: str | None, timezone_name: str) -> str | None:
     if not value:
         return None
@@ -739,6 +1104,241 @@ def _format_timestamp_local(value: str | None, timezone_name: str) -> str | None
         return parsed.astimezone(ZoneInfo(timezone_name)).strftime("%Y-%m-%d %H:%M")
     except Exception:
         return parsed.astimezone().strftime("%Y-%m-%d %H:%M")
+
+
+def _load_open_wearables_client(config: AppConfig) -> OpenWearablesClient:
+    return OpenWearablesClient(
+        api_key=config.ow_api_key or "",
+        api_url=config.ow_api_url or DEFAULT_OPEN_WEARABLES_API_URL,
+    )
+
+
+def _login_open_wearables_developer(client: OpenWearablesClient, config: AppConfig) -> str:
+    if not config.ow_developer_email or not config.ow_developer_password:
+        raise RuntimeError(
+            "Open Wearables developer credentials are required for this self-hosted operation. "
+            "Set --ow-developer-email and --ow-developer-password or save them in .vitalclaw/config.toml."
+    )
+    return client.developer_login(email=config.ow_developer_email, password=config.ow_developer_password)
+
+
+def _generate_open_wearables_invitation(client: OpenWearablesClient, config: AppConfig, user_id: str) -> dict[str, Any]:
+    if _is_local_open_wearables_api_url(config.ow_api_url):
+        developer_token = _login_open_wearables_developer(client, config)
+        return client.generate_invitation_code(user_id, developer_token=developer_token)
+    return client.generate_invitation_code(user_id, developer_token="")
+
+
+def _ensure_open_wearables_user(client: OpenWearablesClient, config: AppConfig) -> str:
+    if config.ow_user_id:
+        client.get_user(config.ow_user_id)
+        return config.ow_user_id
+
+    users = client.list_users()
+    if len(users) == 1:
+        return str(users[0]["id"])
+    if len(users) > 1:
+        raise RuntimeError(
+            "Multiple Open Wearables users exist for this account, but no user_id is configured in VitalClaw. "
+            "Set [open_wearables].user_id in .vitalclaw/config.toml or delete extra users."
+        )
+    created = client.create_user()
+    return str(created["id"])
+
+
+def _open_wearables_status_data(config: AppConfig, repository: Repository, client: OpenWearablesClient) -> dict[str, Any]:
+    user_id = config.ow_user_id
+    if not user_id:
+        return {
+            "source": config.source,
+            "api_url": config.ow_api_url,
+            "user_id": None,
+            "last_invitation_code": config.ow_last_invitation_code,
+            "connections": [],
+            "connected_providers": [],
+            "last_success_at": repository.get_metadata("last_success_at"),
+        }
+    connections = client.list_connections(user_id)
+    connected_providers = sorted({connection.provider for connection in connections if connection.status == "active"})
+    return {
+        "source": config.source,
+        "api_url": config.ow_api_url,
+        "user_id": user_id,
+        "last_invitation_code": config.ow_last_invitation_code,
+        "connections": [
+            {
+                "id": connection.id,
+                "provider": connection.provider,
+                "status": connection.status,
+                "last_synced_at": connection.last_synced_at,
+                "provider_username": connection.provider_username,
+            }
+            for connection in connections
+        ],
+        "connected_providers": connected_providers,
+        "last_success_at": repository.get_metadata("last_success_at"),
+    }
+
+
+def _safe_open_wearables_recovery_summary(
+    client: OpenWearablesClient,
+    *,
+    user_id: str,
+    start_date: str,
+    end_date: str,
+) -> list[dict[str, Any]]:
+    try:
+        return client.get_recovery_summary(user_id=user_id, start_date=start_date, end_date=end_date)
+    except RuntimeError as exc:
+        message = str(exc)
+        if "(501)" in message and "Not implemented" in message:
+            return []
+        raise
+
+
+def _open_wearables_app_instructions(api_url: str | None, invitation_code: str | None) -> list[str]:
+    host = api_url or DEFAULT_OPEN_WEARABLES_API_URL
+    code = invitation_code or "N/A"
+    return [
+        f"Open the official Open Wearables TestFlight app and enter the API host `{host}` (not the dashboard URL).",
+        f"Paste the invitation code `{code}` and connect the app to your Open Wearables user.",
+        "Grant Apple Health permissions when prompted and enable background sync in the app.",
+        "After the first background sync completes, run `vitalclaw sync` again or refresh the VitalClaw UI.",
+    ]
+
+
+def _is_sdk_provider(provider: str) -> bool:
+    return provider in {"apple_health", "google_health_connect", "samsung_health"}
+
+
+def _is_local_open_wearables_api_url(api_url: str | None) -> bool:
+    if not api_url:
+        return False
+    host = (urlparse(api_url).hostname or "").lower()
+    return host in {"localhost", "127.0.0.1"}
+
+
+def _open_wearables_api_reachable(api_url: str) -> bool:
+    try:
+        subprocess.run(
+            ["curl", "-fsS", f"{api_url.rstrip('/')}/"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=5,
+        )
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _open_wearables_frontend_reachable() -> bool:
+    try:
+        subprocess.run(
+            ["curl", "-fsS", "http://127.0.0.1:3001/"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=5,
+        )
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _docker_container_status(name: str) -> str | None:
+    result = subprocess.run(
+        ["docker", "ps", "-a", "--filter", f"name=^{name}$", "--format", "{{.Status}}"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "docker ps failed")
+    status = result.stdout.strip()
+    return status or None
+
+
+def _docker_start_container(name: str) -> None:
+    subprocess.run(["docker", "start", name], capture_output=True, text=True, check=True, timeout=30)
+
+
+def _docker_restart_container(name: str) -> None:
+    subprocess.run(["docker", "restart", name], capture_output=True, text=True, check=True, timeout=30)
+
+
+def _ensure_local_open_wearables_running(config: AppConfig) -> dict[str, Any]:
+    api_url = config.ow_api_url or DEFAULT_OPEN_WEARABLES_API_URL
+    report = {
+        "mode": "local",
+        "api_url": api_url,
+        "api_reachable": False,
+        "frontend_reachable": _open_wearables_frontend_reachable(),
+        "containers": {},
+        "recovered": False,
+    }
+    if not _is_local_open_wearables_api_url(api_url):
+        return report
+
+    if _open_wearables_api_reachable(api_url):
+        report["api_reachable"] = True
+        for name in ("backend__open-wearables", "postgres__open-wearables", "redis__open-wearables", "frontend__open-wearables"):
+            try:
+                report["containers"][name] = _docker_container_status(name)
+            except Exception as exc:  # noqa: BLE001
+                report["containers"][name] = f"error: {exc}"
+        return report
+
+    try:
+        statuses = {
+            name: _docker_container_status(name)
+            for name in ("backend__open-wearables", "postgres__open-wearables", "redis__open-wearables", "frontend__open-wearables")
+        }
+        report["containers"] = dict(statuses)
+    except Exception as exc:  # noqa: BLE001
+        report["error"] = f"Docker unavailable: {exc}"
+        return report
+
+    for dependency in ("postgres__open-wearables", "redis__open-wearables"):
+        status = statuses.get(dependency)
+        if status and not status.lower().startswith("up"):
+            _docker_start_container(dependency)
+            report["recovered"] = True
+            report["containers"][dependency] = _docker_container_status(dependency)
+
+    backend_status = statuses.get("backend__open-wearables")
+    if backend_status:
+        if backend_status.lower().startswith("up"):
+            _docker_restart_container("backend__open-wearables")
+        else:
+            _docker_start_container("backend__open-wearables")
+        report["recovered"] = True
+        report["containers"]["backend__open-wearables"] = _docker_container_status("backend__open-wearables")
+
+    for _ in range(20):
+        if _open_wearables_api_reachable(api_url):
+            report["api_reachable"] = True
+            report["frontend_reachable"] = _open_wearables_frontend_reachable()
+            return report
+        time.sleep(1)
+
+    report["api_reachable"] = False
+    report["frontend_reachable"] = _open_wearables_frontend_reachable()
+    report["error"] = "Local Open Wearables backend is still unavailable after recovery attempts."
+    return report
+
+
+def _start_of_local_day_utc(value: str, timezone_name: str) -> datetime:
+    zone = ZoneInfo(timezone_name) if timezone_name else timezone.utc
+    local = datetime.combine(date.fromisoformat(value), datetime.min.time(), tzinfo=zone)
+    return local.astimezone(timezone.utc)
+
+
+def _end_of_local_day_utc(value: str, timezone_name: str) -> datetime:
+    zone = ZoneInfo(timezone_name) if timezone_name else timezone.utc
+    local = datetime.combine(date.fromisoformat(value), datetime.min.time(), tzinfo=zone) + timedelta(days=1)
+    return local.astimezone(timezone.utc)
 
 
 def _today_iso() -> str:

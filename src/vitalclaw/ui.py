@@ -193,26 +193,28 @@ def _render_twin_panel(snapshot: dict, flash: str | None) -> str:
   .panel-head .r{{display:flex;gap:6px;align-items:center;color:var(--ink-mute);font-size:11px;font-family:'JetBrains Mono',monospace}}
   .liveDot{{width:6px;height:6px;border-radius:50%;background:#5FC79A;box-shadow:0 0 12px #5FC79A;animation:pulseDot 2.4s ease-in-out infinite}}
   @keyframes pulseDot{{0%,100%{{opacity:.9}}50%{{opacity:.35}}}}
-  .stage{{flex:1;position:relative;margin:0 22px;border-radius:20px;overflow:hidden;background:radial-gradient(72% 72% at 50% 48%, #ffffff 0%, #f3f7fb 100%);border:1px solid rgba(25,30,39,.08);min-height:600px;cursor:grab}}
+  .stage{{flex:1;position:relative;margin:0 22px;border-radius:20px;overflow:hidden;background:radial-gradient(72% 72% at 50% 48%, #ffffff 0%, #f3f7fb 100%);border:1px solid rgba(25,30,39,.08);min-height:540px;cursor:grab}}
   .stage.dragging{{cursor:grabbing}}
   .stage::after{{content:"";position:absolute;inset:0;background:radial-gradient(70% 60% at 50% 50%, transparent 58%, rgba(103,117,140,.08) 100%);pointer-events:none}}
   .twin{{position:absolute;inset:0;width:100%;height:100%}}
-  .concept-chip{{position:absolute;left:18px;bottom:14px;z-index:5;font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-mute);display:flex;gap:10px;align-items:center;background:rgba(255,255,255,.86);backdrop-filter:blur(8px);padding:6px 10px;border-radius:999px;border:1px solid var(--line)}}
-  .concept-chip b{{color:var(--ink);font-weight:500}}
   .loading{{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--ink-mute);letter-spacing:.1em;text-transform:uppercase;z-index:4}}
   .loading.hidden{{display:none}}
-  .readout{{padding:16px 28px 10px;display:grid;grid-template-columns:repeat(4,1fr);gap:20px;max-width:760px;width:100%;margin:0 auto}}
+  .readout{{padding:10px 28px 8px;display:grid;grid-template-columns:repeat(4,1fr);gap:20px;max-width:760px;width:100%;margin:0 auto}}
   .reg{{display:flex;flex-direction:column;gap:6px}}
   .reg .lbl{{font-family:'JetBrains Mono',monospace;font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-mute);display:flex;align-items:center;gap:6px}}
   .reg .lbl .sw{{width:7px;height:7px;border-radius:2px}}
   .reg .val{{font-size:13px;color:var(--ink);letter-spacing:-.01em}}
   .reg .val small{{color:var(--ink-dim);font-family:'JetBrains Mono',monospace;font-size:10px;margin-left:4px}}
-  .statebar-wrap{{padding:10px 28px 28px;max-width:760px;width:100%;margin:0 auto}}
+  .statebar-wrap{{padding:4px 28px 24px;max-width:760px;width:100%;margin:0 auto}}
   .statebar{{height:3px;width:100%;border-radius:999px;overflow:hidden;position:relative;background:linear-gradient(90deg,#d24c4c 0%,#E87B5A 25%,#F4C96B 52%,#9bcf6f 75%,#5FC79A 100%)}}
   .statebar::after{{content:"";position:absolute;inset:0;background:linear-gradient(90deg,rgba(255,255,255,.55) 0%,rgba(255,255,255,0) var(--state,72%),rgba(255,255,255,.55) calc(var(--state,72%) + .5%),rgba(255,255,255,.55) 100%)}}
   .statebar-axis{{display:flex;justify-content:space-between;font-family:'JetBrains Mono',monospace;font-size:9.5px;color:var(--ink-mute);margin-top:8px;letter-spacing:.08em;text-transform:uppercase}}
   .flash-banner{{position:fixed;top:18px;left:50%;transform:translateX(-50%);z-index:60;font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink);background:rgba(255,255,255,.92);border:1px solid var(--line-strong);padding:8px 14px;border-radius:999px;backdrop-filter:blur(14px)}}
-  .rotate-hint{{position:absolute;right:18px;bottom:14px;z-index:5;font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-mute);background:rgba(255,255,255,.86);padding:6px 10px;border-radius:999px;border:1px solid var(--line)}}
+  @media (max-width: 768px) {{
+    .stage{{min-height:460px}}
+    .readout{{padding:8px 20px 8px;gap:14px}}
+    .statebar-wrap{{padding:2px 20px 20px}}
+  }}
 </style>
 </head>
 <body>
@@ -225,8 +227,6 @@ def _render_twin_panel(snapshot: dict, flash: str | None) -> str:
   <div class="stage" id="stage">
     <canvas id="twin" class="twin" data-engine="three.js r160"></canvas>
     <div class="loading" id="loading">Loading model…</div>
-    <div class="concept-chip">Model · <b id="conceptName">Particle Twin</b></div>
-    <div class="rotate-hint">Auto-rotate on · drag to rotate</div>
   </div>
   <div class="readout">
     <div class="reg" data-reg="head"><span class="lbl"><span class="sw" id="swHead"></span>Head</span><span class="val" id="lblHead">—<small>sleep · cognition</small></span></div>
@@ -549,7 +549,7 @@ function buildPoints(sampled) {{
 
   const s = sampled.bounds.size;
   const rawMax = Math.max(s.x, s.y, s.z) || 1;
-  const fitScale = 16 / rawMax;
+  const fitScale = 18.2 / rawMax;
   const cx = sampled.bounds.center.x, cy = sampled.bounds.center.y, cz = sampled.bounds.center.z;
   const posArr = geom.attributes.position.array;
   for (let i = 0; i < posArr.length; i += 3) {{

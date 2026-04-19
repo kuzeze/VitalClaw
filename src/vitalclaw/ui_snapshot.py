@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from datetime import date, datetime
+import json
 from statistics import mean
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from vitalclaw.monitor.baselines import compute_baseline_profiles
 from vitalclaw.schema import DailyFeature, StoredAlert
-from vitalclaw.service import _load_runtime
+from vitalclaw.service import _load_runtime, _select_monitorable_feature
 
 METRIC_LABELS = {
     "sleep_duration_hours": "Sleep duration",
@@ -25,21 +26,25 @@ def dashboard_snapshot(*, project_root=None) -> dict[str, Any]:
     """Prepare a compact monitoring console snapshot."""
     _, config, repository = _load_runtime(project_root)
     features = repository.list_daily_features()
-    latest_feature = repository.latest_feature()
+    latest_feature = _select_monitorable_feature(features)
     active_alerts = repository.list_open_alerts()
     latest_alert = repository.get_latest_alert()
     last_sync_at = repository.get_metadata("last_success_at")
+    active_source = repository.get_metadata("active_source") or config.source
+    connected_providers = json_safe_load_list(repository.get_metadata("connected_providers_json"))
     recent_context = repository.list_context_events(active_alerts[0].episode_id) if active_alerts else []
 
     if latest_feature is None:
         return {
             "status": {
                 "label": "No data yet",
-                "reason": "Initialize the project and sync Apple Health before the console can evaluate drift.",
+                "reason": "Initialize the project and sync your configured health data source before the console can evaluate drift.",
                 "tone": "warn",
             },
             "latest_feature_date": None,
             "last_sync_at": _format_timestamp(last_sync_at, config.timezone),
+            "active_source": active_source,
+            "connected_providers": connected_providers,
             "metrics": [],
             "open_alert_count": 0,
             "latest_alert": None,
@@ -58,6 +63,8 @@ def dashboard_snapshot(*, project_root=None) -> dict[str, Any]:
         "status": status,
         "latest_feature_date": latest_feature.feature_date.isoformat(),
         "last_sync_at": _format_timestamp(last_sync_at, config.timezone),
+        "active_source": active_source,
+        "connected_providers": connected_providers,
         "metrics": metrics,
         "signal_summary": _signal_summary(metrics),
         "open_alert_count": len(active_alerts),
@@ -256,6 +263,18 @@ def _format_timestamp(value: str | None, timezone_name: str | None = None) -> st
         parsed = parsed.astimezone()
 
     return parsed.strftime("%Y-%m-%d %H:%M")
+
+
+def json_safe_load_list(value: str | None) -> list[str]:
+    if not value:
+        return []
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(payload, list):
+        return []
+    return [str(item) for item in payload if str(item).strip()]
 
 
 def _episode_dates(repository, alert: StoredAlert) -> set[date]:

@@ -19,6 +19,9 @@ from vitalclaw.service import (
     get_user_profile,
     initialize_project,
     list_open_alerts,
+    open_wearables_connect_app,
+    open_wearables_doctor,
+    open_wearables_status,
     record_context_event,
     set_user_profile,
     sync_remote_data,
@@ -34,8 +37,13 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     init_parser = subparsers.add_parser("init", help="Initialize VitalClaw and perform the first sync.")
-    init_parser.add_argument("--account-key", required=True, help="HealthExport Remote account key.")
+    init_parser.add_argument("--source", choices=("health_export", "open_wearables"), default="health_export", help="Data source to initialize.")
+    init_parser.add_argument("--account-key", default=None, help="HealthExport Remote account key.")
     init_parser.add_argument("--he-path", default=None, help="Path to the official `he` binary.")
+    init_parser.add_argument("--ow-api-key", default=None, help="Open Wearables API key.")
+    init_parser.add_argument("--ow-api-url", default=None, help="Open Wearables API host URL.")
+    init_parser.add_argument("--ow-developer-email", default=None, help="Open Wearables developer email for local self-hosted bootstrap.")
+    init_parser.add_argument("--ow-developer-password", default=None, help="Open Wearables developer password for local self-hosted bootstrap.")
 
     sync_parser = subparsers.add_parser("sync", help="Fetch fresh data from HealthExport Remote.")
     sync_parser.add_argument("--from-date", default=None, help="Override the sync start date (YYYY-MM-DD).")
@@ -89,6 +97,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Persistent freeform instruction that Codex should read from the profile.",
     )
 
+    ow_parser = subparsers.add_parser("open-wearables", help="Open Wearables bootstrap and connection helpers.")
+    ow_subparsers = ow_parser.add_subparsers(dest="ow_command", required=True)
+    ow_subparsers.add_parser("status", help="Show Open Wearables user/provider status.")
+    ow_subparsers.add_parser("connect-app", help="Generate a fresh invitation code for the official mobile app.")
+    ow_subparsers.add_parser("doctor", help="Inspect local Open Wearables API and Docker health.")
+
     subparsers.add_parser("mcp", help="Run the VitalClaw MCP server.")
     subparsers.add_parser("open-alerts", help="List currently open alerts.")
     subparsers.add_parser("snapshot", help="Return the latest monitoring console snapshot.")
@@ -127,6 +141,11 @@ def main(argv: list[str] | None = None) -> None:
             project_root=project_root,
             account_key=args.account_key,
             he_path=args.he_path,
+            source=args.source,
+            ow_api_key=args.ow_api_key,
+            ow_api_url=args.ow_api_url,
+            ow_developer_email=args.ow_developer_email,
+            ow_developer_password=args.ow_developer_password,
         )
     elif args.command == "sync":
         result = sync_remote_data(
@@ -161,6 +180,15 @@ def main(argv: list[str] | None = None) -> None:
             preferred_metrics=args.preferred_metrics,
             standing_instruction=args.standing_instruction,
         )
+    elif args.command == "open-wearables" and args.ow_command == "status":
+        command_key = "ow_status"
+        result = open_wearables_status(project_root=project_root)
+    elif args.command == "open-wearables" and args.ow_command == "connect-app":
+        command_key = "ow_connect_app"
+        result = open_wearables_connect_app(project_root=project_root)
+    elif args.command == "open-wearables" and args.ow_command == "doctor":
+        command_key = "ow_doctor"
+        result = open_wearables_doctor(project_root=project_root)
     elif args.command == "context" and args.context_command == "add":
         result = record_context_event(
             project_root=project_root,
@@ -183,6 +211,24 @@ def main(argv: list[str] | None = None) -> None:
 
 def _format_text(command: str, result: dict) -> str:
     if command == "init":
+        if result.get("source") == "open_wearables":
+            lines = [
+                "VitalClaw initialized for Open Wearables.",
+                f"Runtime: {result['runtime_dir']}",
+                f"API host: {result['open_wearables']['api_url']}",
+                f"Open Wearables user: {result['open_wearables']['user_id']}",
+                f"Bootstrap status: {result['bootstrap_status']}",
+                f"Invitation code: {result['open_wearables']['invitation_code']}",
+            ]
+            if result.get("doctor"):
+                lines.append(
+                    f"Local OW health: api={result['doctor'].get('api_reachable')} frontend={result['doctor'].get('frontend_reachable')} recovered={result['doctor'].get('recovered')}"
+                )
+            if result["open_wearables"].get("connected_providers"):
+                lines.append("Connected providers: " + ", ".join(result["open_wearables"]["connected_providers"]))
+            for instruction in result["open_wearables"].get("instructions", []):
+                lines.append(f"- {instruction}")
+            return "\n".join(lines)
         return (
             "VitalClaw initialized.\n"
             f"Runtime: {result['runtime_dir']}\n"
@@ -246,6 +292,8 @@ def _format_text(command: str, result: dict) -> str:
         status = result["status"]
         lines = [
             f"Briefing status: {status['label']}.",
+            f"Source: {result.get('active_source')}",
+            f"Providers: {', '.join(result.get('connected_providers', [])) or 'none'}",
             f"Reason: {status['reason']}",
             f"Last sync: {result['sync']['last_success_at'] or 'never'}",
             f"Latest feature date: {result['latest_feature_date']}",
@@ -265,6 +313,7 @@ def _format_text(command: str, result: dict) -> str:
     if command == "answer":
         lines = [
             f"Status: {result['status'].get('label', 'Unknown')}",
+            f"Source: {result.get('active_source')} ({', '.join(result.get('connected_providers', [])) or 'none'})",
             (
                 f"Freshness: latest feature day {result['freshness'].get('latest_feature_date')}, "
                 f"last sync {result['freshness'].get('last_success_at_local') or result['freshness'].get('last_success_at') or 'unknown'}"
@@ -275,6 +324,43 @@ def _format_text(command: str, result: dict) -> str:
             lines.append("Missing data: " + "; ".join(result["missing_data_notes"]))
         if result.get("general_context"):
             lines.append(f"General context: {result['general_context']}")
+        return "\n".join(lines)
+    if command == "ow_status":
+        lines = [
+            f"Source: {result['source']}",
+            f"API host: {result['api_url']}",
+            f"Open Wearables user: {result['user_id'] or 'none'}",
+            f"Last invitation code: {result['last_invitation_code'] or 'none'}",
+            f"Connected providers: {', '.join(result['connected_providers']) or 'none'}",
+            f"Last successful sync: {result['last_success_at'] or 'never'}",
+        ]
+        if result.get("doctor"):
+            lines.append(
+                f"Doctor: api={result['doctor'].get('api_reachable')} frontend={result['doctor'].get('frontend_reachable')} recovered={result['doctor'].get('recovered')}"
+            )
+        return "\n".join(lines)
+    if command == "ow_connect_app":
+        lines = [
+            f"API host: {result['api_url']}",
+            f"Open Wearables user: {result['user_id']}",
+            f"Invitation code: {result['invitation_code']}",
+        ]
+        lines.extend(f"- {instruction}" for instruction in result.get("instructions", []))
+        return "\n".join(lines)
+    if command == "ow_doctor":
+        lines = [
+            f"Mode: {result['mode']}",
+            f"API host: {result['api_url']}",
+            f"API reachable: {result['api_reachable']}",
+            f"Frontend reachable: {result['frontend_reachable']}",
+            f"Recovered: {result['recovered']}",
+        ]
+        if result.get("containers"):
+            lines.append(
+                "Containers: " + "; ".join(f"{name}={status}" for name, status in sorted(result["containers"].items()))
+            )
+        if result.get("error"):
+            lines.append(f"Error: {result['error']}")
         return "\n".join(lines)
     if command == "context":
         event = result["event"]
